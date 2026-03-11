@@ -2367,9 +2367,7 @@ async function init(){
     if(migrated > 0) showToast(`✅ ${migrated} file dipindah ke OPFS`);
   }
   if('serviceWorker' in navigator){
-    try{
-      navigator.serviceWorker.register('/sw.js');
-    }catch(e){}
+    navigator.serviceWorker.register('/Kamus-id/sw.js').catch(()=>{});
   }
 }
 init();
