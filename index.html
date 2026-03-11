@@ -1900,12 +1900,11 @@ function pushState(state){
 }
 
 window.addEventListener('popstate', e => {
-  const state = e.state;
 
   // 1. Lightbox terbuka → tutup lightbox
   if(!document.getElementById('lightbox').classList.contains('hidden')){
     closeLb();
-    pushState('gallery');
+    history.replaceState('gallery', '');
     return;
   }
 
@@ -1918,7 +1917,7 @@ window.addEventListener('popstate', e => {
     const el=document.getElementById(id);
     if(el && !el.classList.contains('hidden')){
       el.classList.add('hidden');
-      pushState('gallery');
+      history.replaceState('gallery', '');
       return;
     }
   }
@@ -1927,7 +1926,7 @@ window.addEventListener('popstate', e => {
     const el=document.getElementById(id);
     if(el && !el.classList.contains('hidden')){
       el.classList.add('hidden');
-      pushState('gallery');
+      history.replaceState('gallery', '');
       return;
     }
   }
@@ -1935,32 +1934,33 @@ window.addEventListener('popstate', e => {
   // 3. Multiselect aktif → cancel
   if(multiMode){
     cancelMulti();
-    pushState('gallery');
+    history.replaceState('gallery', '');
     return;
   }
 
   // 4. Di dalam album → balik ke home
   if(curAlbum !== null){
     goHome();
-    pushState('gallery');
+    history.replaceState('gallery', '');
     return;
   }
 
   // 5. Di filter selain 'all' → reset ke semua
   if(curFilter !== 'all'){
     goHome();
-    pushState('gallery');
+    history.replaceState('gallery', '');
     return;
   }
 
   // 6. Di app screen → balik ke lock screen
   if(!document.getElementById('appScreen').classList.contains('hidden')){
     lockApp();
-    pushState('lock');
+    history.replaceState('lock', '');
     return;
   }
 
-  // 7. Sudah di lock screen → biarkan browser keluar
+  // 7. Sudah di lock screen → tahan, jangan keluar dari app
+  history.pushState('lock', '');
 });
 
 // Push initial state saat app dimuat
