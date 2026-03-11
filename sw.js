@@ -1,25 +1,32 @@
-const CACHE = 'kamus-v1';
+const CACHE = 'kamus-v2';
+const BASE = '/Kamus-id';
 
-// Saat install: langsung cache halaman utama
+// File yang langsung di-cache saat install
+const FILES = [
+  BASE + '/',
+  BASE + '/index.html',
+  BASE + '/sw.js',
+];
+
+// Install: langsung cache semua file sekaligus
 self.addEventListener('install', e => {
   e.waitUntil(
     caches.open(CACHE).then(cache => {
-      return cache.addAll([
-        '/',
-        '/index.html'
-      ]);
+      return cache.addAll(FILES).catch(() => {
+        return Promise.all(
+          FILES.map(url => cache.add(url).catch(() => {}))
+        );
+      });
     })
   );
   self.skipWaiting();
 });
 
-// Saat aktif: hapus cache lama
+// Activate: hapus cache lama
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys().then(keys =>
-      Promise.all(
-        keys.filter(k => k !== CACHE).map(k => caches.delete(k))
-      )
+      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
     )
   );
   self.clients.claim();
@@ -28,20 +35,16 @@ self.addEventListener('activate', e => {
 // Fetch: cache-first, update di background
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
-
   e.respondWith(
     caches.open(CACHE).then(cache =>
       cache.match(e.request).then(cached => {
-        // Fetch dari network (update cache di background)
-        const fetchPromise = fetch(e.request).then(res => {
+        const net = fetch(e.request).then(res => {
           if (res && res.status === 200 && res.type !== 'opaque') {
             cache.put(e.request, res.clone());
           }
           return res;
-        }).catch(() => cached);
-
-        // Kalau ada cache langsung return, network jalan di background
-        return cached || fetchPromise;
+        }).catch(() => cached || new Response('Offline', { status: 503 }));
+        return cached || net;
       })
     )
   );
