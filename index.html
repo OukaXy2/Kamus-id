@@ -208,7 +208,9 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
 
 #toast{position:fixed;top:calc(80px + env(safe-area-inset-top));left:50%;transform:translateX(-50%) translateY(-10px);background:var(--card);border:1px solid var(--gold);color:var(--text);padding:10px 20px;border-radius:20px;font-size:.68rem;letter-spacing:.1em;white-space:nowrap;z-index:9998;opacity:0;transition:all .3s;pointer-events:none}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
-#fi{display:none}
+#lbRotateBtn{color:var(--gold);border-color:var(--gold-dim);background:var(--gold-dim)}
+#lbRotateBtn:active{transform:scale(.93) rotate(90deg);transition:transform .3s}
+
 .al{animation:aal .2s ease}.ar{animation:aar .2s ease}
 @keyframes aal{from{opacity:0;transform:translateX(30px)}to{opacity:1;transform:translateX(0)}}
 @keyframes aar{from{opacity:0;transform:translateX(-30px)}to{opacity:1;transform:translateX(0)}}
@@ -381,6 +383,7 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
   <div class="lb-topbar" id="lbTopbar">
     <span class="lb-counter" id="lbC">1/1</span>
     <div class="lb-actions">
+      <button class="icon-btn" id="lbRotateBtn" onclick="masukLandscape()" style="display:none" title="Putar Landscape"><svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.5"><path d="M21 8a2 2 0 0 0-2-2H7l-4 4 4 4h12a2 2 0 0 0 2-2v-4z"/><path d="M3 12V6"/></svg></button>
       <button class="icon-btn" onclick="openMoveLb()"><svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>
       <button class="icon-btn" onclick="deleteLb()"><svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></button>
       <button class="icon-btn" onclick="closeLb()"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
@@ -1388,6 +1391,7 @@ function seekVideo(e){
 // ═══ Lightbox ═══
 function openLb(i){lbIdx=i;uiVisible=true;document.getElementById('lightbox').classList.remove('hidden');setLbUIVisible(true);showLb();showZH();pushState('lightbox');}
 function closeLb(){
+  resetLandscapeIfNeeded();
   document.getElementById('lightbox').classList.add('hidden');
   const vid=document.getElementById('lbVid');
   vid.pause();vid.src='';
@@ -1402,25 +1406,33 @@ function showLb(anim){
   const url=getUrl(m);resetZoom();
   // Hide all first
   img.style.display='none';vid.style.display='none';gif.style.display='none';
+  // Tampilkan tombol rotate hanya untuk video
+  document.getElementById('lbRotateBtn').style.display = m.type==='video' ? 'flex' : 'none';
   if(m.type==='video'){
     vid.style.display='block';
-    vid.src=url;vid.load();
+    // Stop interval dan bersihkan sebelum ganti video
+    stopVidInterval();
+    vid.pause();
+    vid.src='';
+    vid.load();
+    // Hapus semua listener lama dengan clone node
+    const newVid = vid.cloneNode(false);
+    newVid.style.display='block';
+    vid.parentNode.replaceChild(newVid, vid);
+    const freshVid = document.getElementById('lbVid');
+    freshVid.src=url;
+    freshVid.load();
     // Hide custom controls until metadata loaded
     document.getElementById('vidControls').style.display='none';
-    vid.addEventListener('loadedmetadata',()=>{
+    freshVid.addEventListener('loadedmetadata',()=>{
       updateVidProgress();
       if(uiVisible) document.getElementById('vidControls').style.display='flex';
-      // Auto fullscreen for landscape video
-      const isLandscape=vid.videoWidth>vid.videoHeight;
-      if(isLandscape&&document.fullscreenEnabled&&!document.fullscreenElement){
-        const lbEl=document.getElementById('lightbox');
-        lbEl.requestFullscreen&&lbEl.requestFullscreen().catch(()=>{});
-      }
+      // Tidak auto-fullscreen — biarkan user pakai tombol rotate
     },{once:true});
-    vid.addEventListener('play',startVidInterval);
-    vid.addEventListener('pause',stopVidInterval);
-    vid.addEventListener('ended',()=>{ stopVidInterval(); updateVidProgress(); });
-    vid.play().catch(()=>{});
+    freshVid.addEventListener('play',startVidInterval);
+    freshVid.addEventListener('pause',stopVidInterval);
+    freshVid.addEventListener('ended',()=>{ stopVidInterval(); updateVidProgress(); });
+    freshVid.play().catch(()=>{});
   } else if(m.type==='gif'){
     gif.style.display='block';
     gif.src=url;
@@ -1453,7 +1465,7 @@ document.getElementById('lbW').addEventListener('click',e=>{
   if(tMoved) return;
   toggleLbUI();
 });
-function lbNav(dir){const l=filtered();if(l.length<=1)return;lbIdx=(lbIdx+dir+l.length)%l.length;setLbUIVisible(false);showLb(dir>0?'al':'ar');}
+function lbNav(dir){const l=filtered();if(l.length<=1)return;resetLandscapeIfNeeded();lbIdx=(lbIdx+dir+l.length)%l.length;setLbUIVisible(false);showLb(dir>0?'al':'ar');}
 async function toggleFav(){
   const m=filtered()[lbIdx];if(!m)return;const orig=allMedia.find(x=>x.id===m.id);if(!orig)return;
   orig.fav=!orig.fav;await mediaPut(orig);showLb();render();updateStats();showToast(orig.fav?'★ Ditambah ke favorit':'Dihapus dari favorit');
@@ -2337,6 +2349,73 @@ async function removeTL(){
   closeTLModal();
   updateTLSettingsBadge();
   showToast('🔓 Time-Lock dihapus');
+}
+
+// ═══ Rotate ke Landscape — overlay terpisah ═══
+let isLandscapeMode = false;
+let _lsVidSrc = '';
+
+function masukLandscape() {
+  const srcVid = document.getElementById('lbVid');
+  _lsVidSrc = srcVid.src;
+  const ct = srcVid.currentTime;
+
+  // Buat overlay landscape
+  const ov = document.createElement('div');
+  ov.id = 'lsOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:#000;z-index:9999;display:flex;align-items:center;justify-content:center;';
+
+  // Tombol tutup
+  const closeBtn = document.createElement('button');
+  closeBtn.style.cssText = 'position:absolute;top:16px;right:16px;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.3);border-radius:8px;color:white;padding:8px 14px;font-size:.7rem;letter-spacing:.1em;font-family:monospace;z-index:2;cursor:pointer;';
+  closeBtn.textContent = '✕ PORTRAIT';
+  closeBtn.onclick = keluarLandscape;
+
+  // Video landscape
+  const vid = document.createElement('video');
+  vid.src = _lsVidSrc;
+  vid.currentTime = ct;
+  vid.style.cssText = 'width:100%;height:100%;object-fit:contain;';
+  vid.setAttribute('playsinline', '');
+  vid.controls = true;
+  vid.autoplay = true;
+
+  ov.appendChild(vid);
+  ov.appendChild(closeBtn);
+  document.body.appendChild(ov);
+
+  // Pause video asli
+  srcVid.pause();
+  isLandscapeMode = true;
+
+  // Update tombol rotate
+  const btn = document.getElementById('lbRotateBtn');
+  btn.style.borderColor = 'var(--gold)';
+  btn.style.color = 'var(--gold)';
+}
+
+function keluarLandscape() {
+  const ov = document.getElementById('lsOverlay');
+  if (!ov) return;
+  // Sync waktu kembali ke video asli
+  const lsVid = ov.querySelector('video');
+  const ct = lsVid ? lsVid.currentTime : 0;
+  lsVid && lsVid.pause();
+  ov.remove();
+
+  const srcVid = document.getElementById('lbVid');
+  if (srcVid.src) {
+    srcVid.currentTime = ct;
+    srcVid.play().catch(()=>{});
+  }
+
+  isLandscapeMode = false;
+  const btn = document.getElementById('lbRotateBtn');
+  if (btn) { btn.style.borderColor = ''; btn.style.color = ''; }
+}
+
+function resetLandscapeIfNeeded() {
+  if (isLandscapeMode) keluarLandscape();
 }
 
 async function init(){
