@@ -1342,16 +1342,12 @@ function seekVideo(e){
 // Progress bar drag — touch & mouse
 (function(){
   let dragging=false;
-  let wasPlaying=false;
 
   function getClientX(e){ return e.touches?e.touches[0].clientX:(e.changedTouches?e.changedTouches[0].clientX:e.clientX); }
 
   function onDragStart(e){
     e.stopPropagation();
     dragging=true;
-    const vid=document.getElementById('lbVid');
-    wasPlaying=!vid.paused;
-    if(wasPlaying) vid.pause();
     doSeek(e);
   }
   function onDragMove(e){
@@ -1365,8 +1361,6 @@ function seekVideo(e){
     e.stopPropagation();
     dragging=false;
     doSeek(e);
-    const vid=document.getElementById('lbVid');
-    if(wasPlaying) vid.play();
   }
   function doSeek(e){
     const vid=document.getElementById('lbVid');
