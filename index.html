@@ -101,6 +101,10 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
 /* PHOTO CARD */
 .photo-card{position:relative;aspect-ratio:1;overflow:hidden;background:var(--card);cursor:pointer}
 .photo-card img,.photo-card video{width:100%;height:100%;object-fit:cover;display:block}
+/* Shimmer placeholder saat lazy load belum muncul */
+.photo-card.lazy-pending::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,var(--card) 25%,var(--surface) 50%,var(--card) 75%);background-size:200% 100%;animation:shimmer 1.4s infinite}
+.alb-bg-slot.lazy-pending{background:linear-gradient(90deg,var(--card) 25%,var(--surface) 50%,var(--card) 75%);background-size:200% 100%;animation:shimmer 1.4s infinite}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 .media-badge{position:absolute;top:5px;right:5px;background:rgba(0,0,0,.65);border-radius:4px;padding:2px 5px;font-size:.5rem;color:white;backdrop-filter:blur(4px)}
 .fav-star{position:absolute;bottom:5px;right:5px}
 .fav-star svg{width:14px;height:14px;fill:var(--gold);stroke:none;filter:drop-shadow(0 1px 2px rgba(0,0,0,.8))}
@@ -859,10 +863,11 @@ async function opfsDelete(id){
 async function mediaAdd(item){
   const blob = item.blob;
   if(opfsMediaDir){
-    // Simpan blob ke OPFS, metadata ke IndexedDB tanpa blob
+    // Simpan blob ke OPFS, metadata (termasuk thumb) ke IndexedDB tanpa blob
     const ok = await opfsSave(item.id, blob);
     if(ok){
       const meta = {...item, blob:null, _opfs:true};
+      // thumb tetap tersimpan di meta (string base64 kecil, bukan blob)
       await dbAdd(MS, meta);
       item._opfs = true;
       return;
@@ -887,23 +892,25 @@ async function mediaDel(id){
   await dbDel(MS, id);
 }
 
-// Load semua media + reattach blob dari OPFS kalau perlu
+// Load semua media — hanya metadata, blob dimuat lazy saat dibutuhkan
 async function loadAllMedia(){
   const list = await dbAll(MS);
-  const result = [];
-  for(const m of list){
-    if(m._opfs){
-      const file = await opfsRead(m.id);
-      if(file){ m.blob = file; result.push(m); }
-      else {
-        // File OPFS hilang (jarang terjadi), skip
-        console.warn('OPFS file hilang untuk id:',m.id);
-      }
-    } else {
-      result.push(m);
-    }
-  }
-  return result;
+  return list; // langsung return semua, tanpa buka OPFS dulu
+}
+
+// Lazy blob loader — baca OPFS hanya saat benar-benar dibutuhkan
+const blobLoadingMap = new Map(); // mencegah double-load
+async function getBlobLazy(m){
+  if(m.blob) return m.blob; // sudah ada di RAM
+  if(!m._opfs) return null;
+  if(blobLoadingMap.has(m.id)) return blobLoadingMap.get(m.id);
+  const p = opfsRead(m.id).then(file => {
+    if(file) m.blob = file;
+    blobLoadingMap.delete(m.id);
+    return file || null;
+  });
+  blobLoadingMap.set(m.id, p);
+  return p;
 }
 
 // ── MIGRASI: IndexedDB blob → OPFS ──
@@ -968,14 +975,163 @@ let curSort='newest'; // newest | oldest | largest | name
 // ═══ URL Cache ═══
 const urlCache=new Map();
 const thumbCache=new Map();
+
+// getUrl — hanya panggil kalau m.blob sudah ada
 function getUrl(m){
+  if(!m.blob) return null;
   if(!urlCache.has(m.id)) urlCache.set(m.id,URL.createObjectURL(m.blob));
   return urlCache.get(m.id);
 }
+
+// getUrlAsync — load blob dulu kalau belum ada, lalu return URL
+async function getUrlAsync(m){
+  if(!m.blob) await getBlobLazy(m);
+  if(!m.blob) return null;
+  return getUrl(m);
+}
+
+// ═══ Thumbnail Generator (dipanggil sekali saat upload) ═══
+function generateThumbFromBlob(blob, mime){
+  return new Promise(res=>{
+    const url=URL.createObjectURL(blob);
+    const vid=document.createElement('video');
+    vid.src=url; vid.muted=true; vid.playsInline=true; vid.currentTime=0.5;
+    vid.addEventListener('seeked',()=>{
+      try{
+        const c=document.createElement('canvas'); c.width=160; c.height=160;
+        const ctx=c.getContext('2d');
+        const vr=vid.videoWidth/vid.videoHeight;
+        let sx=0,sy=0,sw=vid.videoWidth,sh=vid.videoHeight;
+        if(vr>1){sx=(vid.videoWidth-vid.videoHeight)/2;sw=vid.videoHeight;}
+        else{sy=(vid.videoHeight-vid.videoWidth)/2;sh=vid.videoWidth;}
+        ctx.drawImage(vid,sx,sy,sw,sh,0,0,160,160);
+        URL.revokeObjectURL(url);
+        res(c.toDataURL('image/jpeg',0.6));
+      }catch(e){URL.revokeObjectURL(url);res(null);}
+    },{once:true});
+    vid.addEventListener('error',()=>{URL.revokeObjectURL(url);res(null);},{once:true});
+    vid.load();
+  });
+}
+
+function generateThumbFromImageBlob(blob){
+  return new Promise(res=>{
+    const url=URL.createObjectURL(blob);
+    const img=new Image();
+    img.onload=()=>{
+      try{
+        const c=document.createElement('canvas'); c.width=160; c.height=160;
+        const ctx=c.getContext('2d');
+        const ar=img.naturalWidth/img.naturalHeight;
+        let sx=0,sy=0,sw=img.naturalWidth,sh=img.naturalHeight;
+        if(ar>1){sx=(img.naturalWidth-img.naturalHeight)/2;sw=img.naturalHeight;}
+        else{sy=(img.naturalHeight-img.naturalWidth)/2;sh=img.naturalWidth;}
+        ctx.drawImage(img,sx,sy,sw,sh,0,0,160,160);
+        URL.revokeObjectURL(url);
+        res(c.toDataURL('image/jpeg',0.6));
+      }catch(e){URL.revokeObjectURL(url);res(null);}
+    };
+    img.onerror=()=>{URL.revokeObjectURL(url);res(null);};
+    img.src=url;
+  });
+}
+
+// ═══ Migrasi Thumbnail Background ═══
+// Berjalan diam-diam setelah galeri tampil, generate thumb untuk file lama
+let thumbMigrationRunning = false;
+
+async function migrateOldThumbnails(){
+  if(thumbMigrationRunning) return;
+  const needsMigration = allMedia.filter(m => !m.thumb);
+  if(needsMigration.length === 0) return;
+
+  thumbMigrationRunning = true;
+  let done = 0;
+
+  for(const m of needsMigration){
+    // Yield ke browser dulu tiap iterasi — galeri tetap responsif
+    await new Promise(r => setTimeout(r, 0));
+
+    // Skip kalau sudah punya thumb (mungkin diupdate dari albumCard async)
+    if(m.thumb) continue;
+
+    try{
+      // Load blob lazy — kalau belum di RAM
+      const blob = await getBlobLazy(m);
+      if(!blob) continue;
+
+      // Generate thumbnail sesuai tipe
+      let thumb = null;
+      if(m.type === 'video'){
+        thumb = await generateThumbFromBlob(blob, m.mime);
+      } else if(m.type === 'photo'){
+        thumb = await generateThumbFromImageBlob(blob);
+      } else if(m.type === 'gif'){
+        // GIF: pakai frame pertama saja
+        thumb = await generateThumbFromImageBlob(blob);
+      }
+
+      if(!thumb) continue;
+
+      // Simpan ke DB
+      m.thumb = thumb;
+      await mediaPut(m);
+      done++;
+
+      // Update kartu yang sedang tampil di layar secara langsung
+      const card = document.querySelector(`.photo-card[data-id="${m.id}"]`);
+      if(card){
+        const oldThumb = card.querySelector('.lazy-thumb');
+        // Kalau blob belum dimuat (masih pakai thumbnail), update gambarnya
+        if(oldThumb){ oldThumb.src = thumb; }
+        // Kalau masih shimmer kosong dan blob belum ada, isi dengan thumbnail
+        else if(card.classList.contains('lazy-pending') && !m.blob){
+          card.classList.remove('lazy-pending');
+          const isV = m.type==='video', isG = m.type==='gif';
+          const badge = isV
+            ? `<div class="media-badge"><svg viewBox="0 0 24 24" style="width:9px;height:9px;fill:white;stroke:none;display:inline-block;vertical-align:middle;margin-right:2px"><polygon points="5 3 19 12 5 21 5 3"/></svg>VIDEO</div>`
+            : isG ? `<div class="media-badge" style="background:rgba(100,50,200,.75)">GIF</div>` : '';
+          const img = document.createElement('img');
+          img.src = thumb; img.alt = m.name; img.className = 'lazy-thumb';
+          img.dataset.id = m.id; img.dataset.type = m.type;
+          img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block';
+          const selCheck = card.querySelector('.sel-check');
+          card.insertBefore(img, selCheck ? selCheck.nextSibling : card.firstChild);
+          if(badge) card.insertAdjacentHTML('beforeend', badge);
+        }
+        // Update album card thumbnail juga kalau ini adalah media pertama di albumnya
+        if(m.albumId){
+          const albCard = document.getElementById('albc-' + m.albumId);
+          if(albCard){
+            const slot = albCard.querySelector('.alb-bg-slot');
+            // Cek apakah slot masih kosong/shimmer
+            if(slot && !slot.querySelector('img')){
+              slot.classList.remove('lazy-pending');
+              slot.innerHTML = `<img class="alb-bg" src="${thumb}" alt="">`;
+            }
+          }
+        }
+      }
+
+      // Jeda lebih panjang tiap 5 file supaya tidak monopoli thread
+      if(done % 5 === 0) await new Promise(r => setTimeout(r, 80));
+
+    } catch(e){
+      console.warn('Gagal generate thumb untuk:', m.id, e);
+    }
+  }
+
+  thumbMigrationRunning = false;
+  if(done > 0) showToast(`✅ ${done} thumbnail diperbarui`);
+}
+
+// genVideoThumb — legacy, tetap dipakai di lightbox (pakai thumb tersimpan dulu)
 function genVideoThumb(m){
+  if(m.thumb) return Promise.resolve(m.thumb);
   if(thumbCache.has(m.id)) return Promise.resolve(thumbCache.get(m.id));
   return new Promise(res=>{
     const url=getUrl(m);
+    if(!url){res(null);return;}
     const vid=document.createElement('video');
     vid.src=url;vid.muted=true;vid.playsInline=true;vid.currentTime=0.5;
     vid.addEventListener('seeked',()=>{
@@ -1073,13 +1229,16 @@ async function loadAll(){
   [allMedia,allAlbums]=await Promise.all([loadAllMedia(),dbAll(AS)]);
   allMedia.sort((a,b)=>b.timestamp-a.timestamp);
   render();updateStats();
+  // Jalankan migrasi thumbnail di background — tidak blocking, diam-diam
+  setTimeout(migrateOldThumbnails, 500);
 }
 
 function updateStats(){
   document.getElementById('sT').textContent=allMedia.length;
   document.getElementById('sA').textContent=allAlbums.length;
   document.getElementById('sF').textContent=allMedia.filter(m=>m.fav).length;
-  document.getElementById('sS').textContent=(allMedia.reduce((s,m)=>s+(m.blob?.size||0),0)/1024/1024).toFixed(1)+' MB';
+  // Pakai m.size (tersimpan di metadata) bukan m.blob.size supaya tidak perlu blob dimuat
+  document.getElementById('sS').textContent=(allMedia.reduce((s,m)=>s+(m.size||0),0)/1024/1024).toFixed(1)+' MB';
 }
 
 // ═══ Breadcrumb ═══
@@ -1133,51 +1292,151 @@ function render(){
   }
 
   grid.innerHTML=html;
+  // Aktifkan lazy observer untuk kartu yang perlu dimuat
+  requestAnimationFrame(attachLazyObserver);
 }
 
 function albumCard(a){
   const thumb=allMedia.find(m=>m.albumId===a.id);
   const cnt=allMedia.filter(m=>m.albumId===a.id).length;
   const emptySlot=`<div class="alb-bg-empty"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></div>`;
-  // For photo: render immediately. For video: render placeholder, fill async
+
   let thumbHtml;
-  if(!thumb){ thumbHtml=emptySlot; }
-  else if(thumb.type==='photo'||thumb.type==='gif'){ thumbHtml=`<img class="alb-bg" src="${getUrl(thumb)}" alt="">`; }
-  else { thumbHtml=emptySlot; } // video: will be replaced async
+  if(!thumb){
+    // Album kosong
+    thumbHtml=emptySlot;
+  } else if(thumb.thumb){
+    // ✅ Pakai thumbnail tersimpan — berlaku untuk foto DAN video, langsung muncul tanpa buka blob
+    thumbHtml=`<img class="alb-bg" src="${thumb.thumb}" alt="">`;
+  } else if((thumb.type==='photo'||thumb.type==='gif') && thumb.blob){
+    // Fallback: file lama yang belum punya thumb tersimpan, blob sudah di RAM
+    thumbHtml=`<img class="alb-bg" src="${getUrl(thumb)}" alt="">`;
+  } else {
+    // Fallback: video lama tanpa thumb — generate async seperti sebelumnya
+    thumbHtml=`<div class="alb-bg-slot lazy-pending" id="albslot-${a.id}"></div>`;
+  }
+
   const html=`<div class="album-card" id="albc-${a.id}" onclick="openAlbum('${a.id}')">
     <div class="alb-bg-slot">${thumbHtml}</div>
     <div class="alb-overlay"><div class="alb-name"><svg viewBox="0 0 24 24" style="width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.5;display:inline-block;vertical-align:middle;margin-right:3px"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> ${a.name}</div><div class="alb-count">${cnt} file</div></div>
     <button class="alb-menu" onclick="openAas(event,'${a.id}')"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1" fill="white" stroke="none"/><circle cx="12" cy="12" r="1" fill="white" stroke="none"/><circle cx="12" cy="19" r="1" fill="white" stroke="none"/></svg></button>
   </div>`;
-  // If thumb is video, generate thumbnail async
-  if(thumb&&thumb.type==='video'){
-    setTimeout(()=>{
+
+  // Hanya generate async untuk file lama yang belum punya thumb tersimpan
+  if(thumb && !thumb.thumb && thumb.type==='video'){
+    setTimeout(async ()=>{
       const card=document.getElementById('albc-'+a.id);
       if(!card) return;
       const slot=card.querySelector('.alb-bg-slot');
-      genVideoThumb(thumb).then(dataUrl=>{
-        if(dataUrl&&slot) slot.innerHTML=`<img class="alb-bg" src="${dataUrl}" alt="">`;
-      });
+      // Load blob dulu secara lazy
+      const blob = await getBlobLazy(thumb);
+      if(!blob) return;
+      const dataUrl = await genVideoThumb(thumb);
+      if(dataUrl && slot){
+        slot.classList.remove('lazy-pending');
+        slot.innerHTML=`<img class="alb-bg" src="${dataUrl}" alt="">`;
+        // Simpan thumb ke DB supaya tidak perlu generate lagi
+        thumb.thumb = dataUrl;
+        mediaPut(thumb).catch(()=>{});
+      }
     },0);
   }
   return html;
 }
 
 function photoCard(m,i){
-  const url=getUrl(m);
   const isV=m.type==='video';
   const isG=m.type==='gif';
   const isSel=selectedIds.has(m.id);
-  return `<div class="photo-card${isSel?' selected':''}" data-id="${m.id}" data-idx="${i}"
+
+  // Tampilkan thumbnail tersimpan dulu sebagai preview cepat
+  // Blob asli dimuat lazy via IntersectionObserver
+  const thumbSrc=m.thumb||null;
+  const hasBlobNow=!!m.blob;
+  const url=hasBlobNow?getUrl(m):null;
+
+  // Konten media: pakai blob kalau sudah ada, fallback ke thumbnail, fallback ke shimmer
+  let mediaHtml;
+  if(hasBlobNow && url){
+    // Blob sudah di RAM — tampilkan langsung
+    if(isV){
+      mediaHtml=`<video src="${url}" preload="metadata" muted playsinline style="pointer-events:none"></video><div class="media-badge"><svg viewBox="0 0 24 24" style="width:9px;height:9px;fill:white;stroke:none;display:inline-block;vertical-align:middle;margin-right:2px"><polygon points="5 3 19 12 5 21 5 3"/></svg>VIDEO</div>`;
+    } else if(isG){
+      mediaHtml=`<img src="${url}" alt="${m.name}" loading="lazy"><div class="media-badge" style="background:rgba(100,50,200,.75)">GIF</div>`;
+    } else {
+      mediaHtml=`<img src="${url}" alt="${m.name}" loading="lazy">`;
+    }
+  } else if(thumbSrc){
+    // Blob belum dimuat — tampilkan thumbnail dulu, blob load via observer
+    const badge=isV?`<div class="media-badge"><svg viewBox="0 0 24 24" style="width:9px;height:9px;fill:white;stroke:none;display:inline-block;vertical-align:middle;margin-right:2px"><polygon points="5 3 19 12 5 21 5 3"/></svg>VIDEO</div>`:isG?`<div class="media-badge" style="background:rgba(100,50,200,.75)">GIF</div>`:'';
+    mediaHtml=`<img src="${thumbSrc}" alt="${m.name}" class="lazy-thumb" data-id="${m.id}" data-type="${m.type}">${badge}`;
+  } else {
+    // Tidak ada thumb, tidak ada blob — shimmer + lazy load
+    const badge=isV?`<div class="media-badge"><svg viewBox="0 0 24 24" style="width:9px;height:9px;fill:white;stroke:none;display:inline-block;vertical-align:middle;margin-right:2px"><polygon points="5 3 19 12 5 21 5 3"/></svg>VIDEO</div>`:isG?`<div class="media-badge" style="background:rgba(100,50,200,.75)">GIF</div>`:'';
+    mediaHtml=badge;
+  }
+
+  const needsLazy=!hasBlobNow;
+  return `<div class="photo-card${isSel?' selected':''}${needsLazy?' lazy-pending':''}" data-id="${m.id}" data-idx="${i}"
     onclick="onCardClick(event,'${m.id}',${i})"
     ontouchstart="startLongPress('${m.id}')" ontouchend="cancelLongPress()" ontouchcancel="cancelLongPress()"
     onmousedown="startLongPress('${m.id}')" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()">
     <div class="sel-check"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>
-    ${isV?`<video src="${url}" preload="metadata" muted playsinline style="pointer-events:none"></video><div class="media-badge"><svg viewBox="0 0 24 24" style="width:9px;height:9px;fill:white;stroke:none;display:inline-block;vertical-align:middle;margin-right:2px"><polygon points="5 3 19 12 5 21 5 3"/></svg>VIDEO</div>`
-         :isG?`<img src="${url}" alt="${m.name}"><div class="media-badge" style="background:rgba(100,50,200,.75)">GIF</div>`
-         :`<img src="${url}" alt="${m.name}">`}
+    ${mediaHtml}
     ${m.fav?`<div class="fav-star"><svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></div>`:''}
   </div>`;
+}
+
+// ═══ IntersectionObserver — Lazy Load Blob ═══
+let lazyObserver = null;
+
+function initLazyObserver(){
+  if(lazyObserver) lazyObserver.disconnect();
+  lazyObserver = new IntersectionObserver(async (entries) => {
+    for(const entry of entries){
+      if(!entry.isIntersecting) continue;
+      const card = entry.target;
+      const id = card.dataset.id;
+      lazyObserver.unobserve(card);
+
+      const m = allMedia.find(x=>x.id===id);
+      if(!m || m.blob) continue; // sudah dimuat
+
+      // Load blob dari OPFS
+      const blob = await getBlobLazy(m);
+      if(!blob){ card.classList.remove('lazy-pending'); continue; }
+
+      const url = getUrl(m);
+      if(!url){ card.classList.remove('lazy-pending'); continue; }
+
+      // Ganti konten kartu dengan media asli
+      card.classList.remove('lazy-pending');
+      const isV=m.type==='video', isG=m.type==='gif';
+
+      // Hapus thumbnail preview lama
+      const oldThumb = card.querySelector('.lazy-thumb');
+      if(oldThumb) oldThumb.remove();
+
+      if(isV){
+        const vid=document.createElement('video');
+        vid.src=url; vid.preload='metadata'; vid.muted=true; vid.playsInline=true;
+        vid.style.cssText='width:100%;height:100%;object-fit:cover;display:block;pointer-events:none';
+        card.insertBefore(vid, card.querySelector('.sel-check').nextSibling);
+      } else {
+        const img=document.createElement('img');
+        img.src=url; img.alt=m.name;
+        img.style.cssText='width:100%;height:100%;object-fit:cover;display:block';
+        card.insertBefore(img, card.querySelector('.sel-check').nextSibling);
+      }
+    }
+  },{rootMargin:'200px 0px'}); // mulai load 200px sebelum masuk viewport
+}
+
+function attachLazyObserver(){
+  if(!lazyObserver) initLazyObserver();
+  document.querySelectorAll('.photo-card.lazy-pending').forEach(card=>{
+    lazyObserver.observe(card);
+  });
 }
 
 function setFilter(f,el){curFilter=f;document.querySelectorAll('.ftab').forEach(t=>t.classList.remove('active'));el.classList.add('active');render();}
@@ -1227,13 +1486,23 @@ async function handleFiles(files){
   for(const f of Array.from(files)){
     if(!f.type.startsWith('image/')&&!f.type.startsWith('video/'))continue;
     try{
-      // Convert File to Blob explicitly for reliable IndexedDB storage
       const blob=f.slice(0,f.size,f.type);
+      const isVideo=f.type.startsWith('video/');
+      const isGif=f.type==='image/gif';
+
+      // Generate thumbnail kecil (160x160) sekali saat upload — disimpan permanen di DB
+      let thumb=null;
+      try{
+        if(isVideo) thumb=await generateThumbFromBlob(blob,f.type);
+        else if(!isGif) thumb=await generateThumbFromImageBlob(blob);
+      }catch(e){ thumb=null; }
+
       const item={
         id:Date.now()+Math.random()+'',
         name:f.name.replace(/\.[^.]+$/,''),
         blob:blob,
-        type:f.type==='image/gif'?'gif':f.type.startsWith('video/')?'video':'photo',
+        thumb:thumb,       // ← thumbnail 160x160 JPEG, disimpan ke IndexedDB
+        type:isGif?'gif':isVideo?'video':'photo',
         mime:f.type,
         timestamp:Date.now(),
         date:new Date().toLocaleDateString('id-ID',{day:'2-digit',month:'short',year:'numeric'}),
@@ -1389,7 +1658,16 @@ function seekVideo(e){
 })();
 
 // ═══ Lightbox ═══
-function openLb(i){lbIdx=i;uiVisible=true;document.getElementById('lightbox').classList.remove('hidden');setLbUIVisible(true);showLb();showZH();pushState('lightbox');}
+async function openLb(i){
+  lbIdx=i;
+  const list=filtered();
+  const m=list[i];
+  if(m && !m.blob) await getBlobLazy(m); // pastikan blob tersedia sebelum buka lightbox
+  uiVisible=true;
+  document.getElementById('lightbox').classList.remove('hidden');
+  setLbUIVisible(true);
+  showLb();showZH();pushState('lightbox');
+}
 function closeLb(){
   resetLandscapeIfNeeded();
   document.getElementById('lightbox').classList.add('hidden');
