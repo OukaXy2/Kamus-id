@@ -1230,8 +1230,29 @@ function initGifObserver(){
   },{rootMargin:'100px'});
   document.querySelectorAll('img.lazy-gif').forEach(img=>_gifObserver.observe(img));
 }
+// ── Video Thumbnail Lazy Load Observer ──
+let _vidThumbObserver=null;
+function initVidThumbObserver(){
+  if(_vidThumbObserver) _vidThumbObserver.disconnect();
+  _vidThumbObserver=new IntersectionObserver(entries=>{
+    entries.forEach(entry=>{
+      if(!entry.isIntersecting) return;
+      const img=entry.target;
+      const id=img.dataset.id;
+      if(img.src) return; // sudah ada thumbnail
+      const m=allMedia.find(x=>x.id===id);
+      if(!m) return;
+      genVideoThumb(m).then(dataUrl=>{
+        if(dataUrl&&!img.src) img.src=dataUrl;
+      });
+      _vidThumbObserver.unobserve(img);
+    });
+  },{rootMargin:'100px'});
+  document.querySelectorAll('img.lazy-vid-thumb').forEach(img=>_vidThumbObserver.observe(img));
+}
+
 // Re-init observer setiap kali gallery selesai dirender
-const _origGridObserver=new MutationObserver(()=>initGifObserver());
+const _origGridObserver=new MutationObserver(()=>{ initGifObserver(); initVidThumbObserver(); });
 document.addEventListener('DOMContentLoaded',()=>{
   const g=document.getElementById('gallery');
   if(g) _origGridObserver.observe(g,{childList:true,subtree:false});
@@ -1241,25 +1262,32 @@ function albumCard(a){
   const thumb=allMedia.find(m=>m.albumId===a.id);
   const cnt=allMedia.filter(m=>m.albumId===a.id).length;
   const emptySlot=`<div class="alb-bg-empty"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></div>`;
-  // For photo: render immediately. For video: render placeholder, fill async
+  // Render placeholder dulu, fill thumbnail async untuk semua tipe
   let thumbHtml;
   if(!thumb){ thumbHtml=emptySlot; }
-  else if(thumb.type==='photo'||thumb.type==='gif'){ thumbHtml=`<img class="alb-bg" src="${getUrl(thumb)}" alt="">`; }
-  else { thumbHtml=emptySlot; } // video: will be replaced async
+  else if(thumb.type==='video'){ thumbHtml=thumbCache.has(thumb.id)?`<img class="alb-bg" src="${thumbCache.get(thumb.id)}" alt="">`:emptySlot; }
+  else { const u=getUrl(thumb); thumbHtml=u?`<img class="alb-bg" src="${u}" alt="">`:emptySlot; }
   const html=`<div class="album-card" id="albc-${a.id}" onclick="openAlbum('${a.id}')">
     <div class="alb-bg-slot">${thumbHtml}</div>
     <div class="alb-overlay"><div class="alb-name"><svg viewBox="0 0 24 24" style="width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.5;display:inline-block;vertical-align:middle;margin-right:3px"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> ${a.name}</div><div class="alb-count">${cnt} file</div></div>
     <button class="alb-menu" onclick="openAas(event,'${a.id}')"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1" fill="white" stroke="none"/><circle cx="12" cy="12" r="1" fill="white" stroke="none"/><circle cx="12" cy="19" r="1" fill="white" stroke="none"/></svg></button>
   </div>`;
-  // If thumb is video, generate thumbnail async
-  if(thumb&&thumb.type==='video'){
+  // Fill thumbnail async jika belum ada
+  if(thumb){
     setTimeout(()=>{
       const card=document.getElementById('albc-'+a.id);
       if(!card) return;
       const slot=card.querySelector('.alb-bg-slot');
-      genVideoThumb(thumb).then(dataUrl=>{
-        if(dataUrl&&slot) slot.innerHTML=`<img class="alb-bg" src="${dataUrl}" alt="">`;
-      });
+      if(slot.querySelector('img.alb-bg')) return; // sudah ada thumbnail
+      if(thumb.type==='video'){
+        genVideoThumb(thumb).then(dataUrl=>{
+          if(dataUrl&&slot) slot.innerHTML=`<img class="alb-bg" src="${dataUrl}" alt="">`;
+        });
+      } else {
+        getUrlAsync(thumb).then(u=>{
+          if(u&&slot) slot.innerHTML=`<img class="alb-bg" src="${u}" alt="">`;
+        });
+      }
     },0);
   }
   return html;
@@ -1275,7 +1303,7 @@ function photoCard(m,i){
     ontouchstart="startLongPress('${m.id}',event)" ontouchmove="cancelLongPress(event)" ontouchend="cancelLongPress(event)" ontouchcancel="cancelLongPress(event)"
     onmousedown="startLongPress('${m.id}',event)" onmouseup="cancelLongPress(event)" onmouseleave="cancelLongPress(event)">
     <div class="sel-check"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>
-    ${isV?`<video src="${url}" preload="metadata" muted playsinline style="pointer-events:none"></video><div class="media-badge"><svg viewBox="0 0 24 24" style="width:9px;height:9px;fill:white;stroke:none;display:inline-block;vertical-align:middle;margin-right:2px"><polygon points="5 3 19 12 5 21 5 3"/></svg>VIDEO</div>`
+    ${isV?`<img class="lazy-vid-thumb" data-id="${m.id}" src="${thumbCache.has(m.id)?thumbCache.get(m.id):''}" alt="${m.name}"><div class="media-badge"><svg viewBox="0 0 24 24" style="width:9px;height:9px;fill:white;stroke:none;display:inline-block;vertical-align:middle;margin-right:2px"><polygon points="5 3 19 12 5 21 5 3"/></svg>VIDEO</div>`
          :isG?`<img data-src="${url}" alt="${m.name}" class="lazy-gif"><div class="media-badge" style="background:rgba(100,50,200,.75)">GIF</div>`
          :`<img src="${url}" alt="${m.name}">`}
     ${m.fav?`<div class="fav-star"><svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></div>`:''}
