@@ -2122,9 +2122,16 @@ async function doBackup(){
       msg.textContent=`Memproses ${i+1}/${allMedia.length} file...`;
       // Lazy load blob dulu kalau belum ada di RAM
       if(!m.blob) await getBlobLazy(m);
-      if(!m.blob){ console.warn('Blob tidak ditemukan untuk:', m.id); continue; }
-      // Read blob as ArrayBuffer
-      const ab=await m.blob.arrayBuffer();
+      // Kalau blob masih null (file OPFS hilang), skip file ini
+      if(!m.blob){
+        console.warn('Blob tidak ditemukan, skip:', m.id);
+        bar.style.width=((i/allMedia.length)*70)+'%';
+        continue;
+      }
+      // Read blob as ArrayBuffer — pastikan blob benar-benar ada
+      let ab;
+      try{ ab = await m.blob.arrayBuffer(); }
+      catch(e){ console.warn('Gagal baca blob:', m.id, e); continue; }
       const meta={
         id:m.id, name:m.name, type:m.type, mime:m.mime,
         timestamp:m.timestamp, date:m.date, fav:m.fav,
