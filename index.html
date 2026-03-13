@@ -1900,14 +1900,21 @@ function toggleSelect(id){
 function selectAll(){
   const list=filtered();
   if(selectedIds.size===list.length){
-    selectedIds.clear();
     cancelMulti();
     return;
   }
   list.forEach(m=>selectedIds.add(m.id));
   multiMode=true;
   updateMultiBar();
-  render();
+  // Update semua kartu secara parsial tanpa rebuild DOM
+  document.querySelectorAll('.photo-card').forEach(card=>{
+    const id=card.dataset.id;
+    if(selectedIds.has(id)){
+      card.classList.add('selected');
+      const check=card.querySelector('.sel-check');
+      if(check) check.style.opacity='1';
+    }
+  });
 }
 function updateMultiBar(){
   document.getElementById('multibarInfo').textContent=`${selectedIds.size} dipilih`;
@@ -1916,7 +1923,13 @@ function updateMultiBar(){
 function cancelMulti(){
   multiMode=false; selectedIds.clear();
   document.getElementById('multibar').classList.remove('show');
-  render();
+  // Hapus class 'selected' dari semua kartu tanpa rebuild DOM
+  // Ini mencegah video element di-recreate saat batal select
+  document.querySelectorAll('.photo-card.selected').forEach(card=>{
+    card.classList.remove('selected');
+    const check=card.querySelector('.sel-check');
+    if(check) check.style.opacity='';
+  });
 }
 function bulkMove(){
   if(selectedIds.size===0) return;
@@ -1927,7 +1940,7 @@ function bulkMove(){
 }
 async function doBulkMove(albumId){
   const ids=[...selectedIds];
-  const affectedAlbums=new Set(); // kumpulkan album yang terpengaruh
+  const affectedAlbums=new Set();
   for(const id of ids){
     const m=allMedia.find(x=>x.id===id);
     if(!m) continue;
@@ -1937,9 +1950,13 @@ async function doBulkMove(albumId){
     if(albumId) affectedAlbums.add(albumId); // album baru
   }
   closeMoveAlbum();
-  cancelMulti();
-  // Update thumbnail semua album yang terpengaruh
-  refreshAlbumThumbs([...affectedAlbums]);
+  // Reset multiselect state tanpa trigger render() penuh
+  multiMode=false; selectedIds.clear();
+  document.getElementById('multibar').classList.remove('show');
+  // render() diperlukan karena file berpindah album — kartu perlu diupdate posisinya
+  render(); updateStats();
+  // Update thumbnail album yang terpengaruh setelah render selesai
+  requestAnimationFrame(()=> refreshAlbumThumbs([...affectedAlbums]));
   const a=albumId?allAlbums.find(x=>x.id===albumId):null;
   showToast(`${ids.length} file dipindah ke ${a?a.name:'Tanpa Album'}`);
 }
