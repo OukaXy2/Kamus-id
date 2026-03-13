@@ -1431,48 +1431,60 @@ function initLazyObserver(){
   lazyObserver = new IntersectionObserver(async (entries) => {
     for(const entry of entries){
       if(!entry.isIntersecting) continue;
-      const card = entry.target;
-      const id = card.dataset.id;
-      lazyObserver.unobserve(card);
-
-      const m = allMedia.find(x=>x.id===id);
-      if(!m || m.blob) continue; // sudah dimuat
-
-      // Load blob dari OPFS
-      const blob = await getBlobLazy(m);
-      if(!blob){ card.classList.remove('lazy-pending'); continue; }
-
-      const url = getUrl(m);
-      if(!url){ card.classList.remove('lazy-pending'); continue; }
-
-      // Ganti konten kartu dengan media asli
-      card.classList.remove('lazy-pending');
-      const isV=m.type==='video', isG=m.type==='gif';
-
-      // Hapus thumbnail preview lama
-      const oldThumb = card.querySelector('.lazy-thumb');
-      if(oldThumb) oldThumb.remove();
-
-      if(isV){
-        const vid=document.createElement('video');
-        vid.src=url; vid.preload='metadata'; vid.muted=true; vid.playsInline=true;
-        vid.style.cssText='width:100%;height:100%;object-fit:cover;display:block;pointer-events:none';
-        card.insertBefore(vid, card.querySelector('.sel-check').nextSibling);
-      } else {
-        const img=document.createElement('img');
-        img.src=url; img.alt=m.name;
-        img.style.cssText='width:100%;height:100%;object-fit:cover;display:block';
-        card.insertBefore(img, card.querySelector('.sel-check').nextSibling);
-      }
+      lazyObserver.unobserve(entry.target);
+      await forceLazyLoad(entry.target);
     }
-  },{rootMargin:'200px 0px'}); // mulai load 200px sebelum masuk viewport
+  },{rootMargin:'200px 0px'});
 }
 
 function attachLazyObserver(){
   if(!lazyObserver) initLazyObserver();
-  document.querySelectorAll('.photo-card.lazy-pending').forEach(card=>{
-    lazyObserver.observe(card);
+  const cards = document.querySelectorAll('.photo-card.lazy-pending');
+  const galleryScroll = document.querySelector('.gallery-scroll');
+  const scrollRect = galleryScroll ? galleryScroll.getBoundingClientRect() : document.documentElement.getBoundingClientRect();
+
+  cards.forEach(card=>{
+    const rect = card.getBoundingClientRect();
+    const isVisible = rect.top < scrollRect.bottom + 200 && rect.bottom > scrollRect.top - 200;
+    if(isVisible){
+      // Kartu sudah di viewport saat observer baru dibuat —
+      // force load langsung tanpa tunggu IntersectionObserver trigger
+      forceLazyLoad(card);
+    } else {
+      lazyObserver.observe(card);
+    }
   });
+}
+
+// Force load satu kartu — dipanggil untuk kartu yang sudah di viewport
+async function forceLazyLoad(card){
+  const id = card.dataset.id;
+  const m = allMedia.find(x=>x.id===id);
+  if(!m || m.blob) {
+    card.classList.remove('lazy-pending');
+    return;
+  }
+  const blob = await getBlobLazy(m);
+  if(!blob){ card.classList.remove('lazy-pending'); return; }
+  const url = getUrl(m);
+  if(!url){ card.classList.remove('lazy-pending'); return; }
+
+  card.classList.remove('lazy-pending');
+  const isV=m.type==='video', isG=m.type==='gif';
+  const oldThumb = card.querySelector('.lazy-thumb');
+  if(oldThumb) oldThumb.remove();
+
+  if(isV){
+    const vid=document.createElement('video');
+    vid.src=url; vid.preload='metadata'; vid.muted=true; vid.playsInline=true;
+    vid.style.cssText='width:100%;height:100%;object-fit:cover;display:block;pointer-events:none';
+    card.insertBefore(vid, card.querySelector('.sel-check').nextSibling);
+  } else {
+    const img=document.createElement('img');
+    img.src=url; img.alt=m.name;
+    img.style.cssText='width:100%;height:100%;object-fit:cover;display:block';
+    card.insertBefore(img, card.querySelector('.sel-check').nextSibling);
+  }
 }
 
 function setFilter(f,el){curFilter=f;document.querySelectorAll('.ftab').forEach(t=>t.classList.remove('active'));el.classList.add('active');render();}
@@ -1885,16 +1897,14 @@ function toggleSelect(id){
   else selectedIds.add(id);
   if(selectedIds.size===0){ cancelMulti(); return; }
   updateMultiBar();
-  // Update hanya kartu yang berubah state, bukan rebuild seluruh galeri
-  // Ini mencegah video element di-recreate (yang menyebabkan flicker/refresh)
+  // Update hanya kartu yang berubah state — tidak rebuild DOM, video tidak flicker
   const card=document.querySelector(`.photo-card[data-id="${id}"]`);
   if(card){
+    // CSS .photo-card.selected mengontrol ::after overlay dan .sel-check display
     if(selectedIds.has(id)) card.classList.add('selected');
     else card.classList.remove('selected');
-    const check=card.querySelector('.sel-check');
-    if(check) check.style.opacity=selectedIds.has(id)?'1':'';
   } else {
-    render(); // fallback kalau kartu tidak ditemukan di DOM
+    render(); // fallback kalau kartu tidak ditemukan
   }
 }
 function selectAll(){
@@ -1906,14 +1916,9 @@ function selectAll(){
   list.forEach(m=>selectedIds.add(m.id));
   multiMode=true;
   updateMultiBar();
-  // Update semua kartu secara parsial tanpa rebuild DOM
+  // Tambah class selected ke semua kartu yang ada di DOM saat ini
   document.querySelectorAll('.photo-card').forEach(card=>{
-    const id=card.dataset.id;
-    if(selectedIds.has(id)){
-      card.classList.add('selected');
-      const check=card.querySelector('.sel-check');
-      if(check) check.style.opacity='1';
-    }
+    if(selectedIds.has(card.dataset.id)) card.classList.add('selected');
   });
 }
 function updateMultiBar(){
@@ -1923,12 +1928,9 @@ function updateMultiBar(){
 function cancelMulti(){
   multiMode=false; selectedIds.clear();
   document.getElementById('multibar').classList.remove('show');
-  // Hapus class 'selected' dari semua kartu tanpa rebuild DOM
-  // Ini mencegah video element di-recreate saat batal select
+  // Hapus class selected dari semua kartu — CSS otomatis sembunyikan overlay & checkmark
   document.querySelectorAll('.photo-card.selected').forEach(card=>{
     card.classList.remove('selected');
-    const check=card.querySelector('.sel-check');
-    if(check) check.style.opacity='';
   });
 }
 function bulkMove(){
@@ -1944,18 +1946,19 @@ async function doBulkMove(albumId){
   for(const id of ids){
     const m=allMedia.find(x=>x.id===id);
     if(!m) continue;
-    if(m.albumId) affectedAlbums.add(m.albumId); // album lama
+    if(m.albumId) affectedAlbums.add(m.albumId);
     m.albumId=albumId||null;
     await mediaPut(m);
-    if(albumId) affectedAlbums.add(albumId); // album baru
+    if(albumId) affectedAlbums.add(albumId);
+    // Pastikan blob tetap ada di memori setelah pindah
+    if(!m.blob && m._opfs) await getBlobLazy(m);
   }
   closeMoveAlbum();
-  // Reset multiselect state tanpa trigger render() penuh
+  // Reset multiselect tanpa render penuh — hapus class selected dari kartu
   multiMode=false; selectedIds.clear();
   document.getElementById('multibar').classList.remove('show');
-  // render() diperlukan karena file berpindah album — kartu perlu diupdate posisinya
+  document.querySelectorAll('.photo-card.selected').forEach(c=>c.classList.remove('selected'));
   render(); updateStats();
-  // Update thumbnail album yang terpengaruh setelah render selesai
   requestAnimationFrame(()=> refreshAlbumThumbs([...affectedAlbums]));
   const a=albumId?allAlbums.find(x=>x.id===albumId):null;
   showToast(`${ids.length} file dipindah ke ${a?a.name:'Tanpa Album'}`);
@@ -2009,14 +2012,18 @@ async function doMoveLb(albumId){
 }
 async function doMoveById(mediaId, albumId){
   const orig=allMedia.find(x=>x.id===mediaId); if(!orig) return;
-  const oldAlbumId=orig.albumId; // simpan album lama sebelum diubah
+  const oldAlbumId=orig.albumId;
   orig.albumId=albumId||null;
   await mediaPut(orig);
   closeMoveAlbum();
+  // Pastikan blob masih ada di memori sebelum render — jangan sampai hilang
+  if(!orig.blob && orig._opfs) await getBlobLazy(orig);
   render(); updateStats();
-  // Update thumbnail album lama dan album baru
-  const affected=[oldAlbumId, albumId].filter(Boolean);
-  refreshAlbumThumbs(affected);
+  // Update thumbnail album lama dan baru setelah render selesai
+  requestAnimationFrame(()=>{
+    const affected=[oldAlbumId, albumId].filter(Boolean);
+    refreshAlbumThumbs(affected);
+  });
   const a=albumId?allAlbums.find(x=>x.id===albumId):null;
   showToast('Dipindah ke '+(a?`<svg viewBox="0 0 24 24" style="width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.5;display:inline-block;vertical-align:middle;margin-right:3px"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> ${a.name}`:'Tanpa Album'));
 }
