@@ -979,8 +979,15 @@ const thumbCache=new Map();
 // getUrl — hanya panggil kalau m.blob sudah ada
 function getUrl(m){
   if(!m.blob) return null;
-  if(!urlCache.has(m.id)) urlCache.set(m.id,URL.createObjectURL(m.blob));
-  return urlCache.get(m.id);
+  // Kalau sudah ada di cache, cek apakah masih valid
+  if(urlCache.has(m.id)){
+    const cached = urlCache.get(m.id);
+    if(cached) return cached;
+    urlCache.delete(m.id); // hapus kalau null/undefined
+  }
+  const url = URL.createObjectURL(m.blob);
+  urlCache.set(m.id, url);
+  return url;
 }
 
 // getUrlAsync — load blob dulu kalau belum ada, lalu return URL
@@ -1460,12 +1467,14 @@ function attachLazyObserver(){
 async function forceLazyLoad(card){
   const id = card.dataset.id;
   const m = allMedia.find(x=>x.id===id);
-  if(!m || m.blob) {
-    card.classList.remove('lazy-pending');
-    return;
-  }
-  const blob = await getBlobLazy(m);
-  if(!blob){ card.classList.remove('lazy-pending'); return; }
+  if(!m){ card.classList.remove('lazy-pending'); return; }
+
+  // Pastikan blob ada di RAM
+  if(!m.blob) await getBlobLazy(m);
+  if(!m.blob){ card.classList.remove('lazy-pending'); return; }
+
+  // Hapus cache URL lama supaya Object URL di-generate ulang (bisa stale setelah pindah album)
+  urlCache.delete(id);
   const url = getUrl(m);
   if(!url){ card.classList.remove('lazy-pending'); return; }
 
@@ -1950,8 +1959,9 @@ async function doBulkMove(albumId){
     m.albumId=albumId||null;
     await mediaPut(m);
     if(albumId) affectedAlbums.add(albumId);
-    // Pastikan blob tetap ada di memori setelah pindah
+    // Pastikan blob ada di RAM dan hapus URL cache lama supaya di-generate ulang
     if(!m.blob && m._opfs) await getBlobLazy(m);
+    urlCache.delete(id); // force regenerate Object URL setelah pindah
   }
   closeMoveAlbum();
   // Reset multiselect tanpa render penuh — hapus class selected dari kartu
@@ -2015,9 +2025,11 @@ async function doMoveById(mediaId, albumId){
   const oldAlbumId=orig.albumId;
   orig.albumId=albumId||null;
   await mediaPut(orig);
-  closeMoveAlbum();
-  // Pastikan blob masih ada di memori sebelum render — jangan sampai hilang
+  // Hapus URL cache supaya Object URL di-generate ulang setelah pindah
+  urlCache.delete(mediaId);
+  // Pastikan blob ada di RAM sebelum render
   if(!orig.blob && orig._opfs) await getBlobLazy(orig);
+  closeMoveAlbum();
   render(); updateStats();
   // Update thumbnail album lama dan baru setelah render selesai
   requestAnimationFrame(()=>{
