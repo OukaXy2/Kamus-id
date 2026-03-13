@@ -1497,7 +1497,15 @@ async function forceLazyLoad(card){
 }
 
 function setFilter(f,el){curFilter=f;document.querySelectorAll('.ftab').forEach(t=>t.classList.remove('active'));el.classList.add('active');render();}
-function openAlbum(id){curAlbum=id;updateBc();render();pushState('album');}
+async function openAlbum(id){
+  curAlbum=id; updateBc();
+  // Preload blob untuk semua file di album ini sebelum render
+  // supaya kartu langsung tampil tanpa perlu lazy load
+  const albumMedia = allMedia.filter(m=>m.albumId===id);
+  await Promise.all(albumMedia.map(m=> m.blob ? null : getBlobLazy(m)).filter(Boolean));
+  render();
+  pushState('album');
+}
 
 // ═══ Album Actions ═══
 function openAas(e,id){e.stopPropagation();actAlbId=id;const a=allAlbums.find(x=>x.id===id);document.getElementById('aasT').textContent=a?a.name:'Album';document.getElementById('aas').classList.remove('hidden');}
