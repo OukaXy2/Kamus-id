@@ -1036,6 +1036,42 @@ function generateThumbFromImageBlob(blob){
   });
 }
 
+// ═══ Refresh Thumbnail Album ═══
+// Dipanggil setelah file dipindah — update thumbnail album yang terpengaruh
+function refreshAlbumThumbs(albumIds){
+  for(const albumId of albumIds){
+    const card=document.getElementById('albc-'+albumId);
+    if(!card) continue;
+    const slot=card.querySelector('.alb-bg-slot');
+    if(!slot) continue;
+    // Cari media pertama di album ini (setelah pemindahan)
+    const firstMedia=allMedia.find(m=>m.albumId===albumId);
+    if(!firstMedia){
+      // Album jadi kosong — tampilkan empty slot
+      slot.innerHTML=`<div class="alb-bg-empty"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></div>`;
+    } else if(firstMedia.thumb){
+      // Punya thumbnail tersimpan — langsung update
+      slot.innerHTML=`<img class="alb-bg" src="${firstMedia.thumb}" alt="">`;
+    } else if((firstMedia.type==='photo'||firstMedia.type==='gif') && firstMedia.blob){
+      slot.innerHTML=`<img class="alb-bg" src="${getUrl(firstMedia)}" alt="">`;
+    } else if(firstMedia.type==='video'){
+      // Generate thumbnail async untuk video tanpa thumb
+      slot.classList.add('lazy-pending');
+      getBlobLazy(firstMedia).then(blob=>{
+        if(!blob) return;
+        genVideoThumb(firstMedia).then(dataUrl=>{
+          if(dataUrl){
+            slot.classList.remove('lazy-pending');
+            slot.innerHTML=`<img class="alb-bg" src="${dataUrl}" alt="">`;
+            firstMedia.thumb=dataUrl;
+            mediaPut(firstMedia).catch(()=>{});
+          }
+        });
+      });
+    }
+  }
+}
+
 // ═══ Migrasi Thumbnail Background ═══
 // Berjalan diam-diam setelah galeri tampil, generate thumb untuk file lama
 let thumbMigrationRunning = false;
@@ -1849,7 +1885,17 @@ function toggleSelect(id){
   else selectedIds.add(id);
   if(selectedIds.size===0){ cancelMulti(); return; }
   updateMultiBar();
-  render();
+  // Update hanya kartu yang berubah state, bukan rebuild seluruh galeri
+  // Ini mencegah video element di-recreate (yang menyebabkan flicker/refresh)
+  const card=document.querySelector(`.photo-card[data-id="${id}"]`);
+  if(card){
+    if(selectedIds.has(id)) card.classList.add('selected');
+    else card.classList.remove('selected');
+    const check=card.querySelector('.sel-check');
+    if(check) check.style.opacity=selectedIds.has(id)?'1':'';
+  } else {
+    render(); // fallback kalau kartu tidak ditemukan di DOM
+  }
 }
 function selectAll(){
   const list=filtered();
@@ -1881,14 +1927,19 @@ function bulkMove(){
 }
 async function doBulkMove(albumId){
   const ids=[...selectedIds];
+  const affectedAlbums=new Set(); // kumpulkan album yang terpengaruh
   for(const id of ids){
     const m=allMedia.find(x=>x.id===id);
     if(!m) continue;
+    if(m.albumId) affectedAlbums.add(m.albumId); // album lama
     m.albumId=albumId||null;
     await mediaPut(m);
+    if(albumId) affectedAlbums.add(albumId); // album baru
   }
   closeMoveAlbum();
   cancelMulti();
+  // Update thumbnail semua album yang terpengaruh
+  refreshAlbumThumbs([...affectedAlbums]);
   const a=albumId?allAlbums.find(x=>x.id===albumId):null;
   showToast(`${ids.length} file dipindah ke ${a?a.name:'Tanpa Album'}`);
 }
@@ -1941,10 +1992,14 @@ async function doMoveLb(albumId){
 }
 async function doMoveById(mediaId, albumId){
   const orig=allMedia.find(x=>x.id===mediaId); if(!orig) return;
+  const oldAlbumId=orig.albumId; // simpan album lama sebelum diubah
   orig.albumId=albumId||null;
   await mediaPut(orig);
   closeMoveAlbum();
   render(); updateStats();
+  // Update thumbnail album lama dan album baru
+  const affected=[oldAlbumId, albumId].filter(Boolean);
+  refreshAlbumThumbs(affected);
   const a=albumId?allAlbums.find(x=>x.id===albumId):null;
   showToast('Dipindah ke '+(a?`<svg viewBox="0 0 24 24" style="width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.5;display:inline-block;vertical-align:middle;margin-right:3px"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> ${a.name}`:'Tanpa Album'));
 }
