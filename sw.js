@@ -1,4 +1,4 @@
-const CACHE = 'kamus-v3';
+const CACHE = 'kamus-v4';
 const BASE = '/Kamus-id';
 
 // File yang langsung di-cache saat install
